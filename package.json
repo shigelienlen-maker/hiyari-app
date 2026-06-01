@@ -1,0 +1,660 @@
+import { useState, useRef, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, addDoc, onSnapshot, orderBy, query, updateDoc, doc, arrayUnion } from "firebase/firestore";
+
+// ─── Firebase設定 ───────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyAQdcQQn5C3XMCNed5yL1f4A8sITVmT-Yg",
+  authDomain: "hiyari-report-7a989.firebaseapp.com",
+  projectId: "hiyari-report-7a989",
+  storageBucket: "hiyari-report-7a989.firebasestorage.app",
+  messagingSenderId: "862461163208",
+  appId: "1:862461163208:web:65c2c88346504362a9d7fd"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
+// ─── Google Apps Script URL ──────────────────────────────────
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwCxh5VPnifZpzWr35KBQPujYebZNCUHAyx13mCvZFG0w3p266QdPYZVFagwBTPdeJk/exec";
+
+// ─── マスターデータ ──────────────────────────────────────────
+const INIT_CATEGORIES = [
+  { id: "fall",      label: "転倒・転落", icon: "🏃", color: "#E07B54" },
+  { id: "collision", label: "衝突・接触", icon: "💥", color: "#C0625A" },
+  { id: "machinery", label: "機械・設備", icon: "⚙️", color: "#5B8FA8" },
+  { id: "chemical",  label: "薬品・化学", icon: "🧪", color: "#7E6FAB" },
+  { id: "fire",      label: "火災・爆発", icon: "🔥", color: "#D98844" },
+  { id: "electric",  label: "感電・電気", icon: "⚡", color: "#C4A84B" },
+  { id: "health",    label: "体調・健康", icon: "🏥", color: "#4A9D8F" },
+  { id: "other",     label: "その他",     icon: "📋", color: "#8A9BB0" },
+];
+const INIT_LOCATIONS   = ["製造ライン A","製造ライン B","倉庫","事務所","駐車場","廊下・通路","屋外","その他"];
+const INIT_DEPARTMENTS = ["製造部","品質管理部","物流部","総務部","営業部","その他"];
+
+const SEVERITY = [
+  { id: "low",  label: "軽微",   color: "#4A9D8F", desc: "ヒヤリとした",     bg: "#E8F5F3" },
+  { id: "mid",  label: "中程度", color: "#C4943A", desc: "ハッとした",       bg: "#FDF3E3" },
+  { id: "high", label: "重大",   color: "#C0625A", desc: "大事になりかけた", bg: "#FAEAE9" },
+];
+
+const ADMIN_PASSWORD = "admin123";
+
+function generateId() { return Date.now().toString(36) + Math.random().toString(36).substr(2); }
+function timeAgo(d) {
+  const m = Math.floor((Date.now() - new Date(d)) / 60000);
+  if (m < 1) return "たった今"; if (m < 60) return `${m}分前`;
+  const h = Math.floor(m / 60); if (h < 24) return `${h}時間前`;
+  return `${Math.floor(h / 24)}日前`;
+}
+function avatarColor(name) {
+  const hues = [200,160,30,280,340,20,180,60];
+  return `hsl(${hues[(name||"?").charCodeAt(0) % hues.length]},45%,55%)`;
+}
+
+// ─── スプレッドシートへ送信 ──────────────────────────────────
+async function sendToSheet(report, catLabel, sevLabel) {
+  try {
+    await fetch(GAS_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date: report.date,
+        author: report.author,
+        department: report.department || "",
+        location: report.location,
+        categoryLabel: catLabel,
+        severityLabel: sevLabel,
+        description: report.description,
+        action: report.action || ""
+      })
+    });
+  } catch (e) { console.warn("スプレッドシート送信エラー:", e); }
+}
+
+// ─── メインアプリ ────────────────────────────────────────────
+export default function App() {
+  const [view, setView] = useState("feed");
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [sel, setSel] = useState(null);
+  const [filterCat, setFilterCat] = useState("all");
+  const [filterSev, setFilterSev] = useState("all");
+  const [form, setForm] = useState({ category:"", severity:"", location:"", description:"", action:"", author:"", department:"", imagePreview:null });
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [newComment, setNewComment] = useState("");
+  const fileRef = useRef();
+
+  // Admin
+  const [isAdmin, setIsAdmin]   = useState(false);
+  const [adminPw, setAdminPw]   = useState("");
+  const [adminErr, setAdminErr] = useState("");
+  const [categories, setCategories]   = useState(INIT_CATEGORIES);
+  const [locations, setLocations]     = useState(INIT_LOCATIONS);
+  const [departments, setDepartments] = useState(INIT_DEPARTMENTS);
+  const [adminTab, setAdminTab] = useState("locations");
+  const [newItem, setNewItem]   = useState("");
+  const [editIdx, setEditIdx]   = useState(null);
+  const [editVal, setEditVal]   = useState("");
+
+  const catMap = Object.fromEntries(categories.map(c => [c.id, c]));
+  const sevMap = Object.fromEntries(SEVERITY.map(s => [s.id, s]));
+
+  // ── Firestore リアルタイム購読 ──────────────────────────────
+  useEffect(() => {
+    const q = query(collection(db, "reports"), orderBy("date", "desc"));
+    const unsub = onSnapshot(q, snap => {
+      setReports(snap.docs.map(d => ({ id: d.id, ...d.data(), liked: false })));
+      setLoading(false);
+    }, err => {
+      console.error("Firestore error:", err);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const filtered = reports
+    .filter(r => filterCat === "all" || r.category === filterCat)
+    .filter(r => filterSev === "all" || r.severity === filterSev);
+
+  const todayCount = reports.filter(r => new Date(r.date).toDateString() === new Date().toDateString()).length;
+  const highCount  = reports.filter(r => r.severity === "high").length;
+
+  // ── 写真 ────────────────────────────────────────────────────
+  function handleImg(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = ev => setForm(p => ({ ...p, imagePreview: ev.target.result }));
+    rd.readAsDataURL(f);
+  }
+
+  // ── 報告送信 ─────────────────────────────────────────────────
+  async function handleSubmit() {
+    if (!form.category || !form.severity || !form.location || !form.description || !form.author) return;
+    setSubmitting(true);
+    const cat = catMap[form.category];
+    const sev = sevMap[form.severity];
+    const report = {
+      category: form.category,
+      severity: form.severity,
+      location: form.location,
+      description: form.description,
+      action: form.action || "",
+      author: form.author,
+      department: form.department || "",
+      image: form.imagePreview || null,
+      date: new Date().toISOString(),
+      likes: 0,
+      likedBy: [],
+      comments: [],
+    };
+    try {
+      // Firestoreへ保存
+      await addDoc(collection(db, "reports"), report);
+      // スプレッドシートへ送信
+      await sendToSheet(report, cat?.label || "", sev?.label || "");
+      setSubmitted(true);
+      setTimeout(() => {
+        setSubmitted(false);
+        setForm({ category:"", severity:"", location:"", description:"", action:"", author:"", department:"", imagePreview:null });
+        setView("feed");
+      }, 2000);
+    } catch (e) {
+      alert("送信エラーが発生しました。ネットワークを確認してください。");
+      console.error(e);
+    }
+    setSubmitting(false);
+  }
+
+  // ── いいね ───────────────────────────────────────────────────
+  async function handleLike(id) {
+    const r = reports.find(r => r.id === id);
+    if (!r) return;
+    const ref = doc(db, "reports", id);
+    await updateDoc(ref, { likes: (r.likes || 0) + (r.liked ? -1 : 1) });
+    setReports(rs => rs.map(r => r.id === id ? { ...r, liked: !r.liked, likes: (r.likes||0) + (r.liked?-1:1) } : r));
+    if (sel?.id === id) setSel(r => ({ ...r, liked: !r.liked, likes: (r.likes||0) + (r.liked?-1:1) }));
+  }
+
+  // ── コメント ─────────────────────────────────────────────────
+  async function addComment() {
+    if (!newComment.trim() || !sel) return;
+    const ref = doc(db, "reports", sel.id);
+    await updateDoc(ref, { comments: arrayUnion(newComment.trim()) });
+    setSel(r => ({ ...r, comments: [...(r.comments||[]), newComment.trim()] }));
+    setNewComment("");
+  }
+
+  // ── 管理者 ───────────────────────────────────────────────────
+  function adminLogin() {
+    if (adminPw === ADMIN_PASSWORD) { setIsAdmin(true); setAdminErr(""); setAdminPw(""); setView("admin"); }
+    else setAdminErr("パスワードが違います");
+  }
+  function addListItem(type) {
+    if (!newItem.trim()) return;
+    if (type === "locations")   setLocations(l => [...l, newItem.trim()]);
+    else if (type === "departments") setDepartments(d => [...d, newItem.trim()]);
+    else setCategories(c => [...c, { id: generateId(), label: newItem.trim(), icon: "📌", color: "#8A9BB0" }]);
+    setNewItem("");
+  }
+  function deleteListItem(type, idx) {
+    if (type === "locations")   setLocations(l => l.filter((_,i) => i !== idx));
+    else if (type === "departments") setDepartments(d => d.filter((_,i) => i !== idx));
+    else setCategories(c => c.filter((_,i) => i !== idx));
+  }
+  function saveEdit(type, idx) {
+    if (!editVal.trim()) return;
+    if (type === "locations")   setLocations(l => l.map((v,i) => i===idx ? editVal.trim() : v));
+    else if (type === "departments") setDepartments(d => d.map((v,i) => i===idx ? editVal.trim() : v));
+    else setCategories(c => c.map((v,i) => i===idx ? {...v, label: editVal.trim()} : v));
+    setEditIdx(null); setEditVal("");
+  }
+
+  const C = {
+    bg:"#F7F4F0", card:"#FFFFFF", border:"#EAE5DF",
+    text:"#3D3530", sub:"#8A7F78", accent:"#D97B4F",
+    accentLight:"#FDF0E8", green:"#4A9D8F", greenLight:"#E8F5F3",
+    nav:"#FFFFFF",
+  };
+
+  return (
+    <div style={{fontFamily:"'Noto Sans JP','Hiragino Kaku Gothic ProN',sans-serif",background:C.bg,minHeight:"100vh",color:C.text,maxWidth:430,margin:"0 auto",position:"relative"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{background:#F7F4F0;}
+        ::-webkit-scrollbar{width:3px;}
+        ::-webkit-scrollbar-thumb{background:#D5CFC8;border-radius:2px;}
+        .card{background:#fff;border-radius:16px;box-shadow:0 2px 12px rgba(0,0,0,0.06);border:1px solid #EAE5DF;overflow:hidden;transition:box-shadow 0.2s;}
+        .btn{border:none;cursor:pointer;font-family:inherit;transition:all 0.15s;}
+        .btn:active{transform:scale(0.97);}
+        .pill{display:inline-flex;align-items:center;gap:4px;padding:4px 11px;border-radius:20px;font-size:11px;font-weight:700;}
+        input,textarea,select{font-family:inherit;color:#3D3530;background:#FAFAF8;border:1.5px solid #DDD8D2;border-radius:12px;outline:none;width:100%;padding:12px 14px;font-size:15px;-webkit-appearance:none;}
+        input:focus,textarea:focus,select:focus{border-color:#D97B4F;box-shadow:0 0 0 3px rgba(217,123,79,0.12);}
+        select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238A7F78' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px;}
+        select option{background:#fff;}
+        textarea{resize:vertical;min-height:90px;line-height:1.6;}
+        label{font-size:13px;font-weight:700;color:#8A7F78;display:block;margin-bottom:6px;letter-spacing:0.3px;}
+        @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes popIn{0%{transform:scale(0.7);opacity:0}100%{transform:scale(1);opacity:1}}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .slide-up{animation:slideUp 0.28s ease forwards;}
+        .pop-in{animation:popIn 0.45s cubic-bezier(0.34,1.56,0.64,1) forwards;}
+        .fade-in{animation:fadeIn 0.2s ease forwards;}
+        .scroll-x{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;}
+        .scroll-x::-webkit-scrollbar{display:none;}
+        .spinner{width:22px;height:22px;border:3px solid #EAE5DF;border-top-color:#D97B4F;border-radius:50%;animation:spin 0.7s linear infinite;margin:0 auto;}
+      `}</style>
+
+      {/* ── ヘッダー ─────────────────────────── */}
+      <div style={{background:C.nav,borderBottom:`1px solid ${C.border}`,padding:"14px 18px",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.05)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:19,fontWeight:900,color:C.accent}}>🌿 ヒヤリ報告</div>
+            <div style={{fontSize:11,color:C.sub,marginTop:1}}>みんなで安全をつくろう</div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <div style={{textAlign:"center",background:C.accentLight,borderRadius:10,padding:"6px 12px",minWidth:48}}>
+              <div style={{fontSize:17,fontWeight:900,color:C.accent,lineHeight:1}}>{todayCount}</div>
+              <div style={{fontSize:9,color:C.sub,marginTop:2}}>本日</div>
+            </div>
+            <div style={{textAlign:"center",background:"#FAEAE9",borderRadius:10,padding:"6px 12px",minWidth:48}}>
+              <div style={{fontSize:17,fontWeight:900,color:"#C0625A",lineHeight:1}}>{highCount}</div>
+              <div style={{fontSize:9,color:C.sub,marginTop:2}}>重大</div>
+            </div>
+            <button className="btn" onClick={()=>isAdmin?setView("admin"):(setView("adminLogin"))}
+              style={{background:isAdmin?"#EDF6F4":"#F0EDE9",borderRadius:10,padding:"8px 10px",fontSize:18,lineHeight:1}}>
+              {isAdmin?"🛡️":"🔒"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{paddingBottom:88,minHeight:"calc(100vh - 57px)",overflowY:"auto"}}>
+
+        {/* ══ 管理者ログイン ══ */}
+        {view==="adminLogin" && (
+          <div className="slide-up" style={{padding:"40px 24px"}}>
+            <div style={{textAlign:"center",marginBottom:32}}>
+              <div style={{fontSize:52,marginBottom:12}}>🔒</div>
+              <div style={{fontSize:20,fontWeight:900}}>管理者ログイン</div>
+              <div style={{fontSize:13,color:C.sub,marginTop:6}}>管理者専用エリアです</div>
+            </div>
+            <div className="card" style={{padding:24}}>
+              <label>パスワード</label>
+              <input type="password" value={adminPw} onChange={e=>setAdminPw(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&adminLogin()} placeholder="パスワードを入力" />
+              {adminErr && <div style={{color:"#C0625A",fontSize:12,marginTop:8,textAlign:"center"}}>{adminErr}</div>}
+              <button className="btn" onClick={adminLogin}
+                style={{width:"100%",marginTop:16,padding:14,borderRadius:12,background:C.accent,color:"#fff",fontSize:15,fontWeight:700}}>
+                ログイン
+              </button>
+              <button className="btn" onClick={()=>setView("feed")}
+                style={{width:"100%",marginTop:10,padding:12,borderRadius:12,background:"#F0EDE9",color:C.sub,fontSize:14}}>
+                キャンセル
+              </button>
+            </div>
+            <div style={{textAlign:"center",marginTop:16,fontSize:11,color:C.sub}}>デモ用パスワード: admin123</div>
+          </div>
+        )}
+
+        {/* ══ 管理者パネル ══ */}
+        {view==="admin" && isAdmin && (
+          <div className="slide-up">
+            <div style={{padding:"16px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:17,fontWeight:900}}>🛡️ 管理者パネル</div>
+              <button className="btn" onClick={()=>{setIsAdmin(false);setView("feed");}}
+                style={{background:"#FAEAE9",color:"#C0625A",borderRadius:10,padding:"6px 14px",fontSize:12,fontWeight:700}}>
+                ログアウト
+              </button>
+            </div>
+            <div style={{display:"flex",padding:"0 18px 14px"}}>
+              {[["locations","📍 場所"],["departments","🏢 部署"],["categories","🏷️ カテゴリ"]].map(([t,l])=>(
+                <button key={t} className="btn" onClick={()=>setAdminTab(t)}
+                  style={{flex:1,padding:"9px 4px",fontSize:12,fontWeight:700,
+                    borderBottom:`2.5px solid ${adminTab===t?C.accent:"#DDD8D2"}`,
+                    color:adminTab===t?C.accent:C.sub,background:"none"}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div style={{padding:"0 18px"}}>
+              {["locations","departments","categories"].includes(adminTab) && (() => {
+                const list = adminTab==="locations"?locations:adminTab==="departments"?departments:categories;
+                const label = adminTab==="locations"?"場所":adminTab==="departments"?"部署":"カテゴリ";
+                return (
+                  <div>
+                    <div className="card" style={{padding:16,marginBottom:12}}>
+                      <label>新しい{label}を追加</label>
+                      <div style={{display:"flex",gap:8}}>
+                        <input value={newItem} onChange={e=>setNewItem(e.target.value)}
+                          onKeyDown={e=>e.key==="Enter"&&addListItem(adminTab)} placeholder={`例：新しい${label}`} style={{flex:1}} />
+                        <button className="btn" onClick={()=>addListItem(adminTab)}
+                          style={{background:C.accent,color:"#fff",borderRadius:10,padding:"0 18px",fontSize:20,fontWeight:700}}>＋</button>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                      {list.map((item,idx)=>{
+                        const key = `${adminTab}-${idx}`;
+                        const displayName = adminTab==="categories"?item.label:item;
+                        const icon = adminTab==="locations"?"📍":adminTab==="departments"?"🏢":item.icon;
+                        return (
+                          <div key={key} className="card" style={{padding:"12px 14px",display:"flex",alignItems:"center",gap:10}}>
+                            {editIdx===key ? (
+                              <>
+                                <input value={editVal} onChange={e=>setEditVal(e.target.value)} style={{flex:1,padding:"8px 10px",fontSize:14}} />
+                                <button className="btn" onClick={()=>saveEdit(adminTab,idx)} style={{background:C.green,color:"#fff",borderRadius:8,padding:"8px 12px",fontSize:12,fontWeight:700}}>保存</button>
+                                <button className="btn" onClick={()=>{setEditIdx(null);setEditVal("");}} style={{background:"#F0EDE9",color:C.sub,borderRadius:8,padding:"8px 12px",fontSize:12}}>×</button>
+                              </>
+                            ) : (
+                              <>
+                                <span style={{fontSize:18}}>{icon}</span>
+                                <span style={{flex:1,fontSize:14,fontWeight:500}}>{displayName}</span>
+                                <button className="btn" onClick={()=>{setEditIdx(key);setEditVal(displayName);}}
+                                  style={{background:"#F0EDE9",color:C.sub,borderRadius:8,padding:"6px 12px",fontSize:12}}>編集</button>
+                                <button className="btn" onClick={()=>deleteListItem(adminTab,idx)}
+                                  style={{background:"#FAEAE9",color:"#C0625A",borderRadius:8,padding:"6px 10px",fontSize:12}}>削除</button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ══ 報告一覧 ══ */}
+        {view==="feed" && (
+          <div className="slide-up">
+            <div style={{padding:"12px 18px 10px",background:C.nav,borderBottom:`1px solid ${C.border}`}}>
+              <div className="scroll-x">
+                {[{id:"all",label:"すべて",color:C.accent},...SEVERITY].map(s=>(
+                  <button key={s.id} className="btn" onClick={()=>setFilterSev(s.id)}
+                    style={{whiteSpace:"nowrap",padding:"6px 14px",borderRadius:20,fontSize:12,fontWeight:700,flexShrink:0,
+                      background:filterSev===s.id?s.color:"#F0EDE9",color:filterSev===s.id?"#fff":C.sub}}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              <div className="scroll-x" style={{marginTop:8}}>
+                <button className="btn" onClick={()=>setFilterCat("all")}
+                  style={{whiteSpace:"nowrap",padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:600,flexShrink:0,
+                    background:filterCat==="all"?"#E8E3DC":"transparent",color:filterCat==="all"?C.text:C.sub,border:`1px solid ${C.border}`}}>
+                  全て
+                </button>
+                {categories.map(c=>(
+                  <button key={c.id} className="btn" onClick={()=>setFilterCat(c.id)}
+                    style={{whiteSpace:"nowrap",padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:600,flexShrink:0,
+                      background:filterCat===c.id?c.color+"22":"transparent",
+                      color:filterCat===c.id?c.color:C.sub,border:`1px solid ${filterCat===c.id?c.color:C.border}`}}>
+                    {c.icon} {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {loading ? (
+              <div style={{padding:60,textAlign:"center"}}>
+                <div className="spinner" />
+                <div style={{color:C.sub,fontSize:13,marginTop:14}}>読み込み中…</div>
+              </div>
+            ) : (
+              <div style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:10}}>
+                {filtered.length===0 && (
+                  <div style={{textAlign:"center",color:C.sub,padding:48,fontSize:14}}>
+                    <div style={{fontSize:40,marginBottom:12}}>🔍</div>
+                    該当する報告がありません
+                  </div>
+                )}
+                {filtered.map((r,i)=>{
+                  const cat=catMap[r.category]||{icon:"📋",label:"その他",color:"#8A9BB0"};
+                  const sev=sevMap[r.severity]||SEVERITY[0];
+                  return (
+                    <div key={r.id} className="card fade-in" style={{cursor:"pointer",animationDelay:`${i*0.04}s`}}
+                      onClick={()=>{setSel(r);setView("detail");}}>
+                      {r.image && <img src={r.image} alt="" style={{width:"100%",height:160,objectFit:"cover"}} />}
+                      <div style={{padding:"14px 16px"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                            <span className="pill" style={{background:cat.color+"18",color:cat.color}}>{cat.icon} {cat.label}</span>
+                            <span className="pill" style={{background:sev.bg,color:sev.color}}>{sev.label}</span>
+                          </div>
+                          <span style={{fontSize:11,color:C.sub,whiteSpace:"nowrap",marginLeft:6}}>{timeAgo(r.date)}</span>
+                        </div>
+                        <div style={{fontSize:12,color:C.sub,marginBottom:8}}>📍 {r.location}</div>
+                        <p style={{fontSize:14,lineHeight:1.65,color:C.text,marginBottom:12,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>
+                          {r.description}
+                        </p>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:10,borderTop:`1px solid ${C.border}`}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <div style={{width:28,height:28,borderRadius:"50%",background:avatarColor(r.author),display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#fff"}}>
+                              {(r.author||"?")[0]}
+                            </div>
+                            <div>
+                              <div style={{fontSize:12,fontWeight:700}}>{r.author}</div>
+                              <div style={{fontSize:10,color:C.sub}}>{r.department}</div>
+                            </div>
+                          </div>
+                          <div style={{display:"flex",gap:12,alignItems:"center"}}>
+                            <button className="btn" style={{background:"none",color:r.liked?"#C0625A":C.sub,fontSize:13,display:"flex",alignItems:"center",gap:3,padding:"4px 6px"}}
+                              onClick={e=>{e.stopPropagation();handleLike(r.id);}}>
+                              {r.liked?"❤️":"🤍"} <span style={{fontSize:12}}>{r.likes||0}</span>
+                            </button>
+                            <span style={{fontSize:12,color:C.sub}}>💬 {(r.comments||[]).length}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ 詳細 ══ */}
+        {view==="detail" && sel && (()=>{
+          const cat=catMap[sel.category]||{icon:"📋",label:"その他",color:"#8A9BB0"};
+          const sev=sevMap[sel.severity]||SEVERITY[0];
+          return (
+            <div className="slide-up">
+              <button className="btn" onClick={()=>setView("feed")}
+                style={{background:"none",color:C.sub,padding:"14px 18px",fontSize:14,display:"flex",alignItems:"center",gap:6}}>
+                ← 一覧に戻る
+              </button>
+              {sel.image && <img src={sel.image} alt="" style={{width:"100%",maxHeight:240,objectFit:"cover"}} />}
+              <div style={{padding:"0 16px 24px"}}>
+                <div style={{display:"flex",gap:8,marginBottom:12,marginTop:4,flexWrap:"wrap"}}>
+                  <span className="pill" style={{background:cat.color+"18",color:cat.color,fontSize:12}}>{cat.icon} {cat.label}</span>
+                  <span className="pill" style={{background:sev.bg,color:sev.color,fontSize:12}}>{sev.label} — {sev.desc}</span>
+                </div>
+                <div style={{fontSize:12,color:C.sub,marginBottom:14,display:"flex",gap:12}}>
+                  <span>📍 {sel.location}</span><span>🕐 {timeAgo(sel.date)}</span>
+                </div>
+                <div className="card" style={{padding:16,marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.sub,marginBottom:8,textTransform:"uppercase",letterSpacing:0.4}}>状況・詳細</div>
+                  <p style={{fontSize:14,lineHeight:1.7}}>{sel.description}</p>
+                </div>
+                {sel.action && (
+                  <div className="card" style={{padding:16,marginBottom:12,borderLeft:`3px solid ${C.green}`}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:8}}>💡 改善提案</div>
+                    <p style={{fontSize:14,lineHeight:1.7}}>{sel.action}</p>
+                  </div>
+                )}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 0",borderTop:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`,margin:"4px 0 16px"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{width:36,height:36,borderRadius:"50%",background:avatarColor(sel.author),display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:"#fff"}}>
+                      {(sel.author||"?")[0]}
+                    </div>
+                    <div>
+                      <div style={{fontSize:14,fontWeight:700}}>{sel.author}</div>
+                      <div style={{fontSize:11,color:C.sub}}>{sel.department}</div>
+                    </div>
+                  </div>
+                  <button className="btn" onClick={()=>handleLike(sel.id)}
+                    style={{background:sel.liked?"#FAEAE9":"#F0EDE9",border:`1.5px solid ${sel.liked?"#C0625A":C.border}`,
+                      color:sel.liked?"#C0625A":C.sub,borderRadius:20,padding:"7px 16px",fontSize:13,fontWeight:700}}>
+                    {sel.liked?"❤️":"🤍"} {sel.likes||0}
+                  </button>
+                </div>
+                <div style={{fontSize:13,fontWeight:700,color:C.sub,marginBottom:10}}>💬 コメント（{(sel.comments||[]).length}件）</div>
+                {(sel.comments||[]).map((c,i)=>(
+                  <div key={i} style={{background:"#F7F4F0",borderRadius:12,padding:"10px 14px",marginBottom:8,fontSize:13,lineHeight:1.6}}>
+                    {c}
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:8,marginTop:10}}>
+                  <input value={newComment} onChange={e=>setNewComment(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&addComment()}
+                    placeholder="コメント・対策案を入力…" style={{flex:1,fontSize:13,padding:"10px 12px"}} />
+                  <button className="btn" onClick={addComment}
+                    style={{background:C.accent,color:"#fff",borderRadius:10,padding:"10px 16px",fontSize:13,fontWeight:700,whiteSpace:"nowrap"}}>
+                    送信
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ══ 報告フォーム ══ */}
+        {view==="report" && (
+          <div className="slide-up">
+            {submitted ? (
+              <div className="pop-in" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"65vh",gap:16,padding:24}}>
+                <div style={{fontSize:72}}>✅</div>
+                <div style={{fontSize:22,fontWeight:900,color:C.green}}>報告完了！</div>
+                <div style={{fontSize:14,color:C.sub,textAlign:"center"}}>みんなで共有されました<br/>スプレッドシートにも記録しました</div>
+              </div>
+            ) : (
+              <div style={{padding:"16px 16px 32px"}}>
+                <div style={{marginBottom:20}}>
+                  <div style={{fontSize:19,fontWeight:900,marginBottom:4}}>📝 ヒヤリハット報告</div>
+                  <div style={{fontSize:12,color:C.sub}}>気づいたことをすぐに記録しましょう</div>
+                </div>
+                <div style={{marginBottom:18}}>
+                  <label>カテゴリ <span style={{color:"#C0625A"}}>*</span></label>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    {categories.map(c=>(
+                      <button key={c.id} className="btn" onClick={()=>setForm(f=>({...f,category:c.id}))}
+                        style={{padding:"11px 12px",borderRadius:12,border:`2px solid ${form.category===c.id?c.color:C.border}`,
+                          background:form.category===c.id?c.color+"18":"#FAFAF8",
+                          color:form.category===c.id?c.color:C.sub,fontSize:13,fontWeight:600,
+                          display:"flex",alignItems:"center",gap:8,textAlign:"left"}}>
+                        <span style={{fontSize:16}}>{c.icon}</span>{c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{marginBottom:18}}>
+                  <label>深刻度 <span style={{color:"#C0625A"}}>*</span></label>
+                  <div style={{display:"flex",gap:8}}>
+                    {SEVERITY.map(s=>(
+                      <button key={s.id} className="btn" onClick={()=>setForm(f=>({...f,severity:s.id}))}
+                        style={{flex:1,padding:"12px 6px",borderRadius:12,border:`2px solid ${form.severity===s.id?s.color:C.border}`,
+                          background:form.severity===s.id?s.bg:"#FAFAF8",
+                          color:form.severity===s.id?s.color:C.sub,fontSize:12,fontWeight:700,textAlign:"center"}}>
+                        <div style={{fontSize:13}}>{s.label}</div>
+                        <div style={{fontSize:10,marginTop:3,opacity:0.85,fontWeight:500}}>{s.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{marginBottom:14}}>
+                  <label>発生場所 <span style={{color:"#C0625A"}}>*</span></label>
+                  <select value={form.location} onChange={e=>setForm(f=>({...f,location:e.target.value}))}>
+                    <option value="">場所を選択してください</option>
+                    {locations.map(l=><option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+                <div style={{marginBottom:14}}>
+                  <label>状況・詳細 <span style={{color:"#C0625A"}}>*</span></label>
+                  <textarea value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))}
+                    placeholder="何が起きたか、どんな危険があったかを具体的に書いてください…" />
+                </div>
+                <div style={{marginBottom:14}}>
+                  <label style={{color:C.green}}>💡 改善提案（任意）</label>
+                  <textarea value={form.action} onChange={e=>setForm(f=>({...f,action:e.target.value}))}
+                    placeholder="再発を防ぐためのアイデアがあれば…" style={{minHeight:70}} />
+                </div>
+                <div style={{marginBottom:16}}>
+                  <label>📷 写真（任意）</label>
+                  <input type="file" accept="image/*" capture="environment" ref={fileRef} style={{display:"none"}} onChange={handleImg} />
+                  {form.imagePreview ? (
+                    <div style={{position:"relative"}}>
+                      <img src={form.imagePreview} alt="" style={{width:"100%",height:180,objectFit:"cover",borderRadius:12}} />
+                      <button className="btn" onClick={()=>setForm(f=>({...f,imagePreview:null}))}
+                        style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.5)",color:"#fff",borderRadius:"50%",width:28,height:28,fontSize:14,fontWeight:700}}>×</button>
+                    </div>
+                  ) : (
+                    <button className="btn" onClick={()=>fileRef.current.click()}
+                      style={{width:"100%",padding:22,borderRadius:12,border:`2px dashed ${C.border}`,background:"#FAFAF8",
+                        color:C.sub,fontSize:14,display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:30}}>📷</span>
+                      <span>タップして写真を追加</span>
+                      <span style={{fontSize:11}}>カメラ・アルバムから選択できます</span>
+                    </button>
+                  )}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:24}}>
+                  <div>
+                    <label>氏名 <span style={{color:"#C0625A"}}>*</span></label>
+                    <input value={form.author} onChange={e=>setForm(f=>({...f,author:e.target.value}))} placeholder="山田 太郎" />
+                  </div>
+                  <div>
+                    <label>部署</label>
+                    <select value={form.department} onChange={e=>setForm(f=>({...f,department:e.target.value}))}>
+                      <option value="">選択</option>
+                      {departments.map(d=><option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <button className="btn" onClick={handleSubmit} disabled={submitting}
+                  style={{width:"100%",padding:16,borderRadius:14,fontSize:16,fontWeight:900,
+                    background:(form.category&&form.severity&&form.location&&form.description&&form.author&&!submitting)
+                      ?"linear-gradient(135deg,#E07B54,#D97B4F)":"#E8E3DC",
+                    color:(form.category&&form.severity&&form.location&&form.description&&form.author&&!submitting)?"#fff":C.sub,
+                    boxShadow:(form.category&&form.severity&&form.location&&form.description&&form.author)?"0 4px 16px rgba(217,123,79,0.35)":"none",
+                    transition:"all 0.2s",display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
+                  {submitting ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> 送信中…</> : "報告を送信する"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── ボトムナビ ── */}
+      {view!=="adminLogin" && (
+        <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,
+          background:C.nav,borderTop:`1px solid ${C.border}`,display:"flex",alignItems:"center",
+          padding:"8px 12px",gap:6,paddingBottom:"calc(8px + env(safe-area-inset-bottom))"}}>
+          <button className="btn" onClick={()=>setView("feed")}
+            style={{flex:1,padding:"10px 6px",borderRadius:12,background:view==="feed"?C.accentLight:"none",
+              color:view==="feed"?C.accent:C.sub,fontSize:11,fontWeight:700,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <span style={{fontSize:20}}>📋</span>一覧
+          </button>
+          <button className="btn" onClick={()=>setView("report")}
+            style={{flex:1.8,padding:"13px 8px",borderRadius:14,fontSize:14,fontWeight:900,
+              background:"linear-gradient(135deg,#E07B54,#D97B4F)",color:"#fff",
+              boxShadow:"0 4px 16px rgba(217,123,79,0.4)",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+            ＋ 今すぐ報告
+          </button>
+          <button className="btn" onClick={()=>isAdmin?setView("admin"):setView("adminLogin")}
+            style={{flex:1,padding:"10px 6px",borderRadius:12,
+              background:(view==="admin"||view==="adminLogin")?"#EDF6F4":"none",
+              color:(view==="admin"||view==="adminLogin")?C.green:C.sub,fontSize:11,fontWeight:700,
+              display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <span style={{fontSize:20}}>{isAdmin?"🛡️":"🔒"}</span>{isAdmin?"管理":"管理者"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
