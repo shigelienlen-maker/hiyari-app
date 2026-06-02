@@ -334,20 +334,20 @@ export default function App() {
                         return (
                           <div key={key} className="card" style={{padding:"12px 14px",display:"flex",alignItems:"center",gap:10}}>
                             {editIdx===key ? (
-                              <React.Fragment>
+                              <>
                                 <input value={editVal} onChange={function(e){setEditVal(e.target.value);}} style={{flex:1,padding:"8px 10px",fontSize:14}} />
                                 <button className="btn" onClick={function(){saveEdit(adminTab,idx);}} style={{background:C.green,color:"#fff",borderRadius:8,padding:"8px 12px",fontSize:12,fontWeight:700}}>保存</button>
                                 <button className="btn" onClick={function(){setEditIdx(null);setEditVal("");}} style={{background:"#F0EDE9",color:C.sub,borderRadius:8,padding:"8px 12px",fontSize:12}}>×</button>
-                              </React.Fragment>
+                              </>
                             ) : (
-                              <React.Fragment>
+                              <>
                                 <span style={{fontSize:18}}>{icon}</span>
                                 <span style={{flex:1,fontSize:14,fontWeight:500}}>{displayName}</span>
                                 <button className="btn" onClick={function(){setEditIdx(key);setEditVal(displayName);}}
                                   style={{background:"#F0EDE9",color:C.sub,borderRadius:8,padding:"6px 12px",fontSize:12}}>編集</button>
                                 <button className="btn" onClick={function(){deleteListItem(adminTab,idx);}}
                                   style={{background:"#FAEAE9",color:"#C0625A",borderRadius:8,padding:"6px 10px",fontSize:12}}>削除</button>
-                              </React.Fragment>
+                              </>
                             )}
                           </div>
                         );
