@@ -315,8 +315,7 @@ export default function App() {
       {/* ヘッダー */}
       <div style={{background:C.nav,borderBottom:"1px solid "+C.border,padding:"14px 18px",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.05)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-            <div style={{fontSize:11,color:C.sub,marginBottom:1}}>株式会社アルチブリッジ</div>
+<div style={{fontSize:11,color:C.sub,marginBottom:1}}>株式会社アルチブリッジ</div>
 <div style={{fontSize:19,fontWeight:900,color:C.accent}}>🌿 ヒヤリ報告</div>
 <div style={{fontSize:11,color:C.sub,marginTop:1}}>みんなで安全をつくろう</div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
