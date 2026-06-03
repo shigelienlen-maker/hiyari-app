@@ -315,12 +315,11 @@ export default function App() {
       {/* ヘッダー */}
       <div style={{background:C.nav,borderBottom:"1px solid "+C.border,padding:"14px 18px",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.05)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-<div style={{fontSize:16,fontWeight:900,color:C.text,letterSpacing:"-0.3px"}}>株式会社アルチブリッジ</div>
-<div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
-  <span style={{fontSize:15,fontWeight:900,color:C.accent}}>🌿 ヒヤリ報告</span>
-  <span style={{fontSize:10,color:C.sub,background:"#F0EDE9",borderRadius:6,padding:"2px 7px",fontWeight:600}}>みんなで安全をつくろう</span>
-</div>
+<div>
+            <div style={{fontSize:11,fontWeight:600,color:C.sub}}>株式会社アルチブリッジ</div>
+            <div style={{fontSize:18,fontWeight:900,color:C.accent,marginTop:1}}>🌿 ヒヤリ報告</div>
+            <div style={{fontSize:10,color:C.sub,marginTop:1}}>みんなで安全をつくろう</div>
+          </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <div style={{textAlign:"center",background:C.accentLight,borderRadius:10,padding:"6px 12px",minWidth:48}}>
               <div style={{fontSize:17,fontWeight:900,color:C.accent,lineHeight:1}}>{todayCount}</div>
