@@ -316,9 +316,9 @@ export default function App() {
       <div style={{background:C.nav,borderBottom:"1px solid "+C.border,padding:"14px 18px",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.05)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
-            <div style={{fontSize:19,fontWeight:900,color:C.accent}}>🌿 ヒヤリ報告</div>
-            <div style={{fontSize:11,color:C.sub,marginTop:1}}>みんなで安全をつくろう</div>
-          </div>
+            <div style={{fontSize:11,color:C.sub,marginBottom:1}}>株式会社アルチブリッジ</div>
+<div style={{fontSize:19,fontWeight:900,color:C.accent}}>🌿 ヒヤリ報告</div>
+<div style={{fontSize:11,color:C.sub,marginTop:1}}>みんなで安全をつくろう</div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <div style={{textAlign:"center",background:C.accentLight,borderRadius:10,padding:"6px 12px",minWidth:48}}>
               <div style={{fontSize:17,fontWeight:900,color:C.accent,lineHeight:1}}>{todayCount}</div>
@@ -522,6 +522,13 @@ export default function App() {
                               {r.liked?"❤️":"🤍"} <span style={{fontSize:12}}>{r.likes||0}</span>
                             </button>
                             <span style={{fontSize:12,color:C.sub}}>{"💬 "+(r.comments||[]).length}</span>
+{isAdmin && (
+  <button className="btn"
+    style={{background:"#FAEAE9",color:"#C0625A",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700}}
+    onClick={function(e){e.stopPropagation();setDeleteConfirm(r.id);}}>
+    🗑️
+  </button>
+)}
                           </div>
                         </div>
                       </div>
