@@ -16,8 +16,7 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwCxh5VPnifZpzWr35KBQPujYebZNCUHAyx13mCvZFG0w3p266QdPYZVFagwBTPdeJk/exec";
-
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxoF9piva7pZx2sOvP0SeHYYuJuwnpKJx1WZoz2GQMWmiVP23ot436YhYkZtW2e1qSX/exec";
 const DEFAULT_CATEGORIES = [
   { id: "fall",      label: "転倒・転落", icon: "🏃", color: "#E07B54" },
   { id: "collision", label: "衝突・接触", icon: "💥", color: "#C0625A" },
