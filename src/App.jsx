@@ -685,7 +685,7 @@ export default function App() {
                 </div>
                 <div style={{marginBottom:16}}>
                   <label>📷 写真（任意）</label>
-                  <input type="file" accept="image/*" capture="environment" ref={fileRef} style={{display:"none"}} onChange={handleImg} />
+                  <input type="file" accept="image/*" ref={fileRef} style={{display:"none"}} onChange={handleImg} />
                   {form.imagePreview ? (
                     <div style={{position:"relative"}}>
                       <img src={form.imagePreview} alt="" style={{width:"100%",height:180,objectFit:"cover",borderRadius:12}} />
