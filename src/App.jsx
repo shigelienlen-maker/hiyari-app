@@ -106,6 +106,7 @@ export default function App() {
   const [newComment, setNewComment] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const fileRef = useRef();
+const cameraRef = useRef();
 
   const [isAdmin, setIsAdmin]         = useState(false);
   const [adminPw, setAdminPw]         = useState("");
@@ -686,6 +687,7 @@ export default function App() {
                 <div style={{marginBottom:16}}>
                   <label>📷 写真（任意）</label>
                   <input type="file" accept="image/*" ref={fileRef} style={{display:"none"}} onChange={handleImg} />
+<input type="file" accept="image/*" capture="environment" ref={cameraRef} style={{display:"none"}} onChange={handleImg} />
                   {form.imagePreview ? (
                     <div style={{position:"relative"}}>
                       <img src={form.imagePreview} alt="" style={{width:"100%",height:180,objectFit:"cover",borderRadius:12}} />
@@ -694,13 +696,20 @@ export default function App() {
                         style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.5)",color:"#fff",borderRadius:"50%",width:28,height:28,fontSize:14,fontWeight:700}}>×</button>
                     </div>
                   ) : (
-                    <button className="btn" onClick={function(){fileRef.current.click();}}
-                      style={{width:"100%",padding:22,borderRadius:12,border:"2px dashed "+C.border,background:"#FAFAF8",
-                        color:C.sub,fontSize:14,display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:30}}>📷</span>
-                      <span>タップして写真を追加</span>
-                      <span style={{fontSize:11}}>カメラ・アルバムから選択できます</span>
-                    </button>
+                    <div style={{display:"flex",gap:8}}>
+  <button className="btn" onClick={function(){cameraRef.current.click();}}
+    style={{flex:1,padding:16,borderRadius:12,border:"2px dashed "+C.border,background:"#FAFAF8",
+      color:C.sub,fontSize:13,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+    <span style={{fontSize:26}}>📷</span>
+    <span>カメラで撮影</span>
+  </button>
+  <button className="btn" onClick={function(){fileRef.current.click();}}
+    style={{flex:1,padding:16,borderRadius:12,border:"2px dashed "+C.border,background:"#FAFAF8",
+      color:C.sub,fontSize:13,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+    <span style={{fontSize:26}}>🖼️</span>
+    <span>ファイルから選択</span>
+  </button>
+</div>
                   )}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:24}}>
